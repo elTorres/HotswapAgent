@@ -4,7 +4,7 @@ Reinject injection points after bean redefinition. Define and register a new bea
 Redefine proxy class if proxied class is redefined. Appropriate redefinition can be specified in `hotswap-agent.properties` file.
 There are 2 approaches what to do after bean class redefinition:
 
-* reinject injection points in existing bean instances - old bean instances **survive**
+* reinject injection points in existing bean instances - old bean instances **survive**, including beans behind OpenWebBeans scope and interceptor proxies
 * reload existing bean instances in contexts - old bean instances are **lost**
 
 OWB plugin uses reinjection by default, but it is not desired in some cases. Therefore it is possible to specify reloading strategy

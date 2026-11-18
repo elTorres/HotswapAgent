@@ -22,10 +22,18 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Method;
+import java.util.Collections;
+import java.util.List;
+
 import javax.enterprise.inject.spi.Bean;
 import javax.enterprise.inject.spi.BeanManager;
 import javax.enterprise.inject.spi.CDI;
 
+import org.apache.webbeans.proxy.InterceptorDecoratorProxyFactory;
+import org.apache.webbeans.proxy.NormalScopeProxyFactory;
+import org.hotswap.agent.plugin.cdi.HaCdiCommons;
+import org.hotswap.agent.plugin.cdi.HaCdiExtraContext;
 import org.hotswap.agent.plugin.hotswapper.HotSwapper;
 import org.hotswap.agent.plugin.owb.command.BeanClassRefreshAgent;
 import org.hotswap.agent.plugin.owb.testBeans.DependentHello1;
@@ -75,6 +83,40 @@ public class OwbPluginTest extends HAAbstractUnitTest {
     public void basicTest() {
         assertEquals("HelloServiceImpl1.hello():HelloProducer1.hello()", getBeanInstance(HelloService.class).hello());
         assertEquals("DependentHello1.hello():HelloServiceImpl1.hello():HelloProducer1.hello()", getBeanInstance(DependentHello1.class).hello());
+    }
+
+    @Test
+    public void reinjectsRegisteredBeanBehindBothProxies() throws Exception {
+        Class<HelloServiceImpl1> beanClass = HelloServiceImpl1.class;
+        ClassLoader loader = beanClass.getClassLoader();
+        HelloServiceImpl1 target = new HelloServiceImpl1();
+        InterceptorDecoratorProxyFactory interceptors = getWebBeansContext().getInterceptorDecoratorProxyFactory();
+        Class<HelloServiceImpl1> interceptorClass = interceptors.createProxyClass(
+                getBean(beanClass), loader, beanClass, new Method[0], new Method[]{beanClass.getMethod("hello")});
+        HelloServiceImpl1 intercepted = interceptors.createProxyInstance(interceptorClass, target, null);
+        NormalScopeProxyFactory scopes = getWebBeansContext().getNormalScopeProxyFactory();
+        HelloServiceImpl1 proxy = scopes.createProxyInstance(scopes.createProxyClass(loader, beanClass), () -> intercepted);
+
+        HaCdiExtraContext context = new HaCdiExtraContext() {
+            @Override
+            public boolean containsBeanInstances(Class<?> type) {
+                return type == beanClass;
+            }
+
+            @Override
+            public List<Object> getBeanInstances(Class<?> type) {
+                return containsBeanInstances(type) ? Collections.singletonList(proxy) : Collections.emptyList();
+            }
+        };
+        HaCdiCommons.registerExtraContext(context);
+        try {
+            BeanClassRefreshAgent.reloadBean(loader, beanClass.getName(),
+                    Collections.singletonMap(beanClass.getName(), "previous signature"),
+                    Collections.emptyMap(), "NEVER", beanClass.getProtectionDomain().getCodeSource().getLocation());
+            assertEquals("HelloServiceImpl1.hello():HelloProducer1.hello()", target.hello());
+        } finally {
+            HaCdiCommons.unregisterExtraContext(context);
+        }
     }
 
     /**
