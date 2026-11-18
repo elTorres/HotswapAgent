@@ -49,5 +49,15 @@ Hooked XmlBeanDefinitionReader.loadBeanDefinitions(URL url) method to get it's a
 If you are running server using IDE, just change the xml and save it.
 If the server is running standalone, you need to change the xml under server's webapp path with autoHotswap on, because there is actually no hotswap for xml
 
+Message bundles
+---------------
+The Spring plugin does not invalidate the cache for `message_<locale>.properties` files.
+For live edits during development, configure the application's `messageSource` as a
+[`ReloadableResourceBundleMessageSource`](https://docs.spring.io/spring-framework/docs/5.3.39/javadoc-api/org/springframework/context/support/ReloadableResourceBundleMessageSource.html).
+Point its basename at an editable filesystem location (for example, `file:/path/to/i18n/message`,
+without the locale or `.properties` suffix) and set `cacheSeconds` to `0` in development.
+Edit the file at that location; changing a source file that was copied into a JAR or a deployment
+directory does not change the file Spring reads.
+
 # TODO:
 * ... a lot to do ...

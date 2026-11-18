@@ -12,6 +12,7 @@
 
 ## Diseño y verificación
 
+- Compila la rama `1.x` con JDK 11 (DCEVM). En Windows, usa `C:\Workspace\java\dcevm-11.0.15+1` como `JAVA_HOME` y comprueba con `mvn -v` que Maven usa ese JDK antes de compilar. Valida por separado la compatibilidad de ejecución con Java 8.
 - En backend, separa reglas de negocio e integración. La arquitectura hexagonal se aplica al backend: dominio y aplicación independientes de HTTP, persistencia y frameworks; puertos para dependencias externas reales.
 - En frontend, organiza componentes, estado y acceso a datos según su responsabilidad. Extrae un composable o servicio cuando simplifique el comportamiento o exista reutilización real.
 - Mantén una aplicación y un módulo como punto de partida. Añade módulos, mensajería o servicios separados cuando exista una necesidad demostrable.
