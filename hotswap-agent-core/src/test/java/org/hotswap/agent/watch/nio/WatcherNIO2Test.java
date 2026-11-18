@@ -29,6 +29,8 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -550,6 +552,28 @@ public class WatcherNIO2Test {
 
     private static class InspectableTreeWatcher extends TreeWatcherNIO {
         InspectableTreeWatcher() throws IOException {
+        }
+
+        @Override
+        protected void registerAll(Path dir) throws IOException {
+            if (WatcherFactory.IS_WINDOWS) {
+                super.registerAll(dir);
+                return;
+            }
+
+            // Exercise TreeWatcherNIO's key handling with a real, non-recursive registration off Windows.
+            Path portableDir = (Path) Proxy.newProxyInstance(Path.class.getClassLoader(),
+                    new Class<?>[] { Path.class }, (proxy, method, args) -> {
+                        if ("register".equals(method.getName()) && method.isVarArgs()) {
+                            return dir.register((WatchService) args[0], (WatchEvent.Kind<?>[]) args[1]);
+                        }
+                        try {
+                            return method.invoke(dir, args);
+                        } catch (InvocationTargetException e) {
+                            throw e.getCause();
+                        }
+                    });
+            super.registerAll(portableDir);
         }
 
         void addInvalidKey(Path path) {
