@@ -80,12 +80,10 @@ public class VaadinPlugin {
 
     public void registerServlet(Object vaadinServlet) {
         try {
-            Class<?> vaadinIntegrationClass = appClassLoader.loadClass(
-                    VaadinIntegration.class.getName());
+            Class<?> vaadinIntegrationClass = resolveClass("org.hotswap.agent.plugin.vaadin.VaadinIntegration");
             Object vaadinIntegration = vaadinIntegrationClass.getConstructor()
                     .newInstance();
-            Class<?> vaadinServletClass = Class.forName("com.vaadin.flow.server.VaadinServlet",
-                    true, appClassLoader);
+            Class<?> vaadinServletClass = resolveClass("com.vaadin.flow.server.VaadinServlet");
             Method m = vaadinIntegrationClass.getDeclaredMethod("servletInitialized",
                     vaadinServletClass);
             m.invoke(vaadinIntegration, vaadinServlet);

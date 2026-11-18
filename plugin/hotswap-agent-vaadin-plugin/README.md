@@ -12,6 +12,8 @@ Features
 * All internal metadata caches are cleared whenever a class is changed
 * Automatic browser refresh when Java classes are reloaded  
 
+The servlet integration is loaded through the application classloader, even when it is not visible to the agent classloader.
+
 Configuration
 -------------
 The following properties may be added to `hotswap-agent.properties`:
