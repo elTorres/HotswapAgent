@@ -22,7 +22,9 @@ import java.net.URI;
 import java.net.URL;
 
 /**
- * Watch for change in directory directory tree.
+ * Watches directory trees for file changes. An implementation keeps its
+ * underlying watch resources available across application undeployments and
+ * releases them only after {@link #stop()}.
  *
  * @author Jiri Bubnik
  */
@@ -34,6 +36,7 @@ public interface Watcher {
      *                    listener will never be disassociated (even if application is undeployed)
      * @param pathPrefix where to listen
      * @param listener   the listener
+     * @throws IllegalStateException if this watcher has already been stopped
      */
     void addEventListener(ClassLoader classLoader, URI pathPrefix, WatchEventListener listener);
 
@@ -44,23 +47,34 @@ public interface Watcher {
      *                    listener will never be disassociated (even if application is undeployed)
      * @param pathPrefix where to listen
      * @param listener   the listener
+     * @throws IllegalStateException if this watcher has already been stopped
      */
     void addEventListener(ClassLoader classLoader, URL pathPrefix, WatchEventListener listener);
 
     /**
-     * Remove all listeners registered with a classloader
-     * @param classLoader classloadr to close
+     * Removes listeners owned by a classloader without affecting other
+     * applications or listeners registered with a {@code null} owner.
+     * Permanent listeners and watch resources remain available until
+     * {@link #stop()}.
+     *
+     * @param classLoader classloader to close; {@code null} does not identify
+     *                    an owner and is ignored
      */
     void closeClassLoader(ClassLoader classLoader);
 
 
     /**
-     * Run the watcher agent thread.
+     * Starts the watcher agent threads. Repeated calls while the watcher is
+     * running do not create additional threads.
+     *
+     * @throws IllegalStateException if this watcher has already been stopped
      */
     void run();
 
     /**
-     * Stop the watcher agent thread.
+     * Stops this watcher terminally and releases its watch resources. The
+     * method is idempotent and a stopped watcher cannot be started or receive
+     * new listeners again.
      */
     void stop();
 }

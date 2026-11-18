@@ -30,6 +30,7 @@ import java.lang.reflect.Field;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.ClosedWatchServiceException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,6 +63,12 @@ import org.hotswap.agent.watch.Watcher;
  * @author alpapad@gmail.com
  */
 public abstract class AbstractNIO2Watcher implements Watcher {
+    private enum State {
+        CREATED,
+        RUNNING,
+        STOPPED
+    }
+
     protected AgentLogger LOGGER = AgentLogger.getLogger(this.getClass());
 
     protected final static WatchEvent.Kind<?>[] KINDS = new WatchEvent.Kind<?>[] { ENTRY_CREATE, ENTRY_DELETE, ENTRY_MODIFY };
@@ -75,7 +82,7 @@ public abstract class AbstractNIO2Watcher implements Watcher {
 
     private Thread runner;
 
-    private volatile boolean stopped;
+    private State state = State.CREATED;
 
     protected final EventDispatcher dispatcher;
 
@@ -90,48 +97,66 @@ public abstract class AbstractNIO2Watcher implements Watcher {
         return (WatchEvent<T>) event;
     }
 
+    /**
+     * Registers a listener atomically with its directory watches.
+     *
+     * @throws IllegalStateException if this watcher has already been stopped
+     */
     @Override
-    public synchronized void addEventListener(ClassLoader classLoader, URI pathPrefix, WatchEventListener listener) {
-        File path;
-        try {
-            // check that it is regular file
-            // toString() is weird and solves HiarchicalUriException for URI
-            // like "file:./src/resources/file.txt".
-            path = new File(pathPrefix);
-         } catch (IllegalArgumentException e) {
-            if (!LOGGER.isLevelEnabled(Level.TRACE)) {
-                LOGGER.warning("Unable to watch for path {}, not a local regular file or directory.", pathPrefix);
-            } else {
-                LOGGER.trace("Unable to watch for path {} exception", e, pathPrefix);
+    public void addEventListener(ClassLoader classLoader, URI pathPrefix, WatchEventListener listener) {
+        synchronized (listeners) {
+            ensureActive();
+
+            File path;
+            try {
+                // check that it is regular file
+                // toString() is weird and solves HiarchicalUriException for URI
+                // like "file:./src/resources/file.txt".
+                path = new File(pathPrefix);
+            } catch (IllegalArgumentException e) {
+                if (!LOGGER.isLevelEnabled(Level.TRACE)) {
+                    LOGGER.warning("Unable to watch for path {}, not a local regular file or directory.", pathPrefix);
+                } else {
+                    LOGGER.trace("Unable to watch for path {} exception", e, pathPrefix);
+                }
+                return;
             }
-            return;
-        }
 
-        try {
-            addDirectory(path.toPath());
-        } catch (IOException e) {
-            if (!LOGGER.isLevelEnabled(Level.TRACE)) {
-                LOGGER.warning("Unable to watch for path {}, not a local regular file or directory.", pathPrefix);
-            } else {
-                LOGGER.trace("Unable to watch path with prefix '{}' for changes.", e, pathPrefix);
+            try {
+                addDirectory(path.toPath());
+            } catch (IOException e) {
+                if (!LOGGER.isLevelEnabled(Level.TRACE)) {
+                    LOGGER.warning("Unable to watch for path {}, not a local regular file or directory.", pathPrefix);
+                } else {
+                    LOGGER.trace("Unable to watch path with prefix '{}' for changes.", e, pathPrefix);
+                }
+                return;
             }
-            return;
-        }
 
-        List<WatchEventListener> list = listeners.get(Paths.get(pathPrefix));
-        if (list == null) {
-            list = new ArrayList<WatchEventListener>();
-            listeners.put(Paths.get(pathPrefix), list);
-        }
-        list.add(listener);
+            Path pathKey = Paths.get(pathPrefix);
+            List<WatchEventListener> list = listeners.get(pathKey);
+            if (list == null) {
+                list = new ArrayList<WatchEventListener>();
+                listeners.put(pathKey, list);
+            }
+            list.add(listener);
 
-        if (classLoader != null) {
-            classLoaderListeners.put(listener, classLoader);
+            if (classLoader != null) {
+                classLoaderListeners.put(listener, classLoader);
+            }
         }
     }
 
+    /**
+     * Registers a listener atomically with its directory watches.
+     *
+     * @throws IllegalStateException if this watcher has already been stopped
+     */
     @Override
     public void addEventListener(ClassLoader classLoader, URL pathPrefix, WatchEventListener listener) {
+        synchronized (listeners) {
+            ensureActive();
+        }
         if (pathPrefix == null) {
             return;
         }
@@ -144,167 +169,237 @@ public abstract class AbstractNIO2Watcher implements Watcher {
     }
 
     /**
-     * Remove all transformers registered with a classloader
+     * Removes only listeners owned by the given classloader. Empty listener
+     * sets release their watch keys, but not the shared watch service.
      *
-     * @param classLoader
+     * @param classLoader classloader to remove; {@code null} is ignored
      */
     @Override
     public void closeClassLoader(ClassLoader classLoader) {
-        for (Iterator<Entry<WatchEventListener, ClassLoader>> entryIterator = classLoaderListeners.entrySet().iterator(); entryIterator.hasNext();) {
-            Entry<WatchEventListener, ClassLoader> entry = entryIterator.next();
-            if (entry.getValue().equals(classLoader)) {
-                entryIterator.remove();
-                try {
-                    for (Iterator<Entry<Path, List<WatchEventListener>>> listenersIterator = listeners.entrySet().iterator(); listenersIterator.hasNext();) {
-                        Entry<Path, List<WatchEventListener>> pathListenerEntry = listenersIterator.next();
-                        List<WatchEventListener> l = pathListenerEntry.getValue();
-
-                        if (l != null) {
-                            l.remove(entry.getKey());
-                        }
-
-                        if (l == null || l.isEmpty()) {
-                            listenersIterator.remove();
-                        }
-
-                    }
-                } catch (Exception e) {
-                    LOGGER.error("Ooops", e);
-                }
-            }
+        if (classLoader == null) {
+            return;
         }
-        // cleanup...
-        if (classLoaderListeners.isEmpty()) {
-            listeners.clear();
-            for (WatchKey wk : keys.keySet()) {
-                try {
-                    wk.cancel();
-                } catch (Exception e) {
-                    LOGGER.error("Ooops", e);
+
+        synchronized (listeners) {
+            for (Iterator<Entry<WatchEventListener, ClassLoader>> entryIterator =
+                    classLoaderListeners.entrySet().iterator(); entryIterator.hasNext();) {
+                Entry<WatchEventListener, ClassLoader> entry = entryIterator.next();
+                if (entry.getValue().equals(classLoader)) {
+                    entryIterator.remove();
+                    removeListener(entry.getKey());
                 }
             }
-            try {
-                this.watcher.close();
-            } catch (IOException e) {
-                LOGGER.error("Ooops", e);
-            }
-            LOGGER.info("All classloaders closed, released watch service..");
-            try {
-                // Reset
-                this.watcher = FileSystems.getDefault().newWatchService();
-            } catch (IOException e) {
-                LOGGER.error("Ooops", e);
+
+            if (listeners.isEmpty()) {
+                for (Iterator<WatchKey> iterator = keys.keySet().iterator(); iterator.hasNext();) {
+                    WatchKey key = iterator.next();
+                    key.cancel();
+                    iterator.remove();
+                }
             }
         }
         LOGGER.debug("All watch listeners removed for classLoader {}", classLoader);
     }
 
+    private void removeListener(WatchEventListener listener) {
+        for (Iterator<Entry<Path, List<WatchEventListener>>> iterator = listeners.entrySet().iterator();
+                iterator.hasNext();) {
+            Entry<Path, List<WatchEventListener>> entry = iterator.next();
+            List<WatchEventListener> pathListeners = entry.getValue();
+            if (pathListeners != null) {
+                pathListeners.remove(listener);
+                if (pathListeners.isEmpty()) {
+                    iterator.remove();
+                }
+            } else {
+                iterator.remove();
+            }
+        }
+    }
+
+    private void cancelAndClearRegistrations() {
+        for (Iterator<WatchKey> iterator = keys.keySet().iterator(); iterator.hasNext();) {
+            iterator.next().cancel();
+            iterator.remove();
+        }
+        listeners.clear();
+        classLoaderListeners.clear();
+    }
+
+    private void ensureActive() {
+        if (state == State.STOPPED) {
+            throw new IllegalStateException("Watcher has been stopped and cannot be reused");
+        }
+    }
+
     /**
-     * Registers the given directory
+     * Registers the given directory.
+     *
+     * @param path directory to register
+     * @throws IOException if registration fails
+     * @throws IllegalStateException if the watcher has been stopped
      */
     public void addDirectory(Path path) throws IOException {
-       registerAll(path);
+        synchronized (listeners) {
+            ensureActive();
+            registerAll(path);
+        }
     }
 
     protected abstract void registerAll(final Path dir) throws IOException;
 
     /**
-     * Process all events for keys queued to the watcher
+     * Process all events for one key queued to the watcher.
      *
-     * @return true if should continue
-     * @throws InterruptedException
+     * @return true while the watcher remains active
+     * @throws InterruptedException if the watcher thread is interrupted
      */
     private boolean processEvents() throws InterruptedException {
-
-        // wait for key to be signaled
         WatchKey key = watcher.poll(10, TimeUnit.MILLISECONDS);
         if (key == null) {
-            return true;
+            return isActive();
         }
 
-        Path dir = keys.get(key);
-
-        if (dir == null) {
-            LOGGER.warning("WatchKey '{}' not recognized", key);
-            return true;
-        }
-
-        for (WatchEvent<?> event : key.pollEvents()) {
-            WatchEvent.Kind<?> kind = event.kind();
-
-            if (kind == OVERFLOW) {
-                LOGGER.warning("WatchKey '{}' overflowed", key);
-                continue;
+        synchronized (listeners) {
+            if (state == State.STOPPED) {
+                return false;
             }
 
-            // Context for directory entry event is the file name of entry
-            WatchEvent<Path> ev = cast(event);
-            Path name = ev.context();
-            Path child = dir.resolve(name);
+            Path dir = keys.get(key);
+            if (dir == null || !key.isValid()) {
+                keys.remove(key);
+                if (dir == null) {
+                    LOGGER.warning("WatchKey '{}' not recognized or no longer valid", key);
+                }
+                return true;
+            }
 
-            LOGGER.debug("Watch event '{}' on '{}' --> {}", event.kind().name(), child, name);
+            for (WatchEvent<?> event : key.pollEvents()) {
+                WatchEvent.Kind<?> kind = event.kind();
 
-            dispatcher.add(ev, child);
+                if (kind == OVERFLOW) {
+                    LOGGER.warning("WatchKey '{}' overflowed", key);
+                    continue;
+                }
 
-            // if directory is created, and watching recursively, then
-            // register it and its sub-directories
-            if (kind == ENTRY_CREATE) {
-                try {
-                    if (Files.isDirectory(child, NOFOLLOW_LINKS)) {
-                        registerAll(child);
+                WatchEvent<Path> ev = cast(event);
+                Path name = ev.context();
+                Path child = dir.resolve(name);
+
+                LOGGER.debug("Watch event '{}' on '{}' --> {}", event.kind().name(), child, name);
+
+                dispatcher.add(ev, child);
+
+                if (kind == ENTRY_CREATE) {
+                    try {
+                        if (Files.isDirectory(child, NOFOLLOW_LINKS)) {
+                            registerAll(child);
+                        }
+                    } catch (IOException x) {
+                        LOGGER.warning("Unable to register events for directory {}", x, child);
                     }
-                } catch (IOException x) {
-                    LOGGER.warning("Unable to register events for directory {}", x, child);
                 }
             }
-        }
 
-        // reset key and remove from set if directory no longer accessible
-        boolean valid = key.reset();
-        if (!valid) {
-            LOGGER.warning("Watcher on {} not valid, removing path=", keys.get(key));
-            keys.remove(key);
-            // all directories are inaccessible
-            if (keys.isEmpty()) {
-                return false;
+            boolean valid = key.reset();
+            if (!valid) {
+                LOGGER.warning("Watcher on {} not valid, removing path", dir);
+                keys.remove(key);
             }
-            if (classLoaderListeners.isEmpty()) {
-                for (WatchKey k : keys.keySet()) {
-                    k.cancel();
-                }
-                return false;
-            }
+            return true;
         }
-        return true;
+    }
+
+    private boolean isActive() {
+        synchronized (listeners) {
+            return state == State.RUNNING;
+        }
     }
 
     @Override
     public void run() {
+        synchronized (listeners) {
+            ensureActive();
+            if (state == State.RUNNING) {
+                return;
+            }
 
-        runner = new Thread() {
-            @Override
-            public void run() {
-                try {
-                    for (;;) {
-                        if (stopped || !processEvents()) {
-                            break;
+            state = State.RUNNING;
+            runner = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (processEvents()) {
+                            // Continue until the watcher is stopped or fails.
+                        }
+                    } catch (ClosedWatchServiceException e) {
+                        if (isActive()) {
+                            LOGGER.error("Watch service closed unexpectedly", e);
+                            stop();
+                        }
+                    } catch (InterruptedException e) {
+                        if (isActive()) {
+                            LOGGER.error("Watch consumer interrupted unexpectedly", e);
+                            stop();
+                        }
+                    } catch (RuntimeException e) {
+                        if (isActive()) {
+                            LOGGER.error("Unexpected watch consumer failure", e);
+                            stop();
                         }
                     }
-                } catch (InterruptedException x) {
-
                 }
-            }
-        };
-        runner.setDaemon(true);
-        runner.setName("HotSwap Watcher");
-        runner.start();
-
-        dispatcher.start();
+            });
+            runner.setDaemon(true);
+            runner.setName("HotSwap Watcher");
+            dispatcher.start();
+            runner.start();
+        }
     }
 
+    /**
+     * Stops this watcher terminally. Watch registrations are cleared and the
+     * shared watch service is closed after the listener monitor is released.
+     * Worker joins avoid waiting on the current callback thread.
+     */
     @Override
     public void stop() {
-        stopped = true;
+        boolean closeService;
+        Thread runnerToJoin;
+        synchronized (listeners) {
+            closeService = state != State.STOPPED;
+            state = State.STOPPED;
+            cancelAndClearRegistrations();
+            runnerToJoin = runner;
+        }
+
+        if (closeService) {
+            try {
+                watcher.close();
+            } catch (IOException e) {
+                LOGGER.error("Unable to close watch service", e);
+            }
+        }
+
+        if (runnerToJoin != null && runnerToJoin != Thread.currentThread()) {
+            runnerToJoin.interrupt();
+        }
+
+        if (runnerToJoin != null && runnerToJoin != Thread.currentThread()) {
+            try {
+                runnerToJoin.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                LOGGER.warning("Interrupted while waiting for watch consumer to stop", e);
+            }
+        }
+
+        try {
+            dispatcher.stop();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOGGER.warning("Interrupted while waiting for watcher dispatcher to stop", e);
+        }
     }
 
     /**

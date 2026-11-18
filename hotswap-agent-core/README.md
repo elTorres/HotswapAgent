@@ -16,7 +16,12 @@ although it is usually better to use plugin custom "dependency injection" via @I
 * Annotations (@Plugin, @Init, @Transform, @Watch) - define agent plugin and wire / use agent services
 * Scheduler / Command - schedule an command for execution. Merge similar commands into single execution, handle
     classloading issues.
-* Watcher - service to register filesystem events (create/modify/delete a resource).
+* Watcher - service to register filesystem events (create/modify/delete a resource). It keeps one
+    watch service available across application redeployments. Closing a classloader removes only that
+    classloader's listeners; listeners registered without an owner are permanent. The service and worker
+    threads are released only by an explicit terminal `stop()`. Events selected before a close can still
+    finish, and the queued filesystem notifications do not provide transactional or exactly-once delivery.
+    This lifecycle guarantee does not claim that all application-server resource leaks are fixed.
 * Transformer - service to register hotwap transformation (define or reload a class definition).
 * Javaassist - source code for 3.17.1-GA official javaasist release repackaged to custom location to avoid conflicts.
 * Logger - Simple logging mechanism. Custom logging is use instead of library to avoid conflicts with frameworks / app servers.

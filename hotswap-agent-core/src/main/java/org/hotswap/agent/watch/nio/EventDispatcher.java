@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import org.hotswap.agent.logging.AgentLogger;
 import org.hotswap.agent.watch.WatchEventListener;
@@ -73,11 +74,10 @@ public class EventDispatcher implements Runnable {
     /** The map of listeners.  This is managed by the watcher service*/
     private final Map<Path, List<WatchEventListener>> listeners;
 
-    /** The working queue. The event queue is drained and all pending events are added in this list */
-    private final ArrayList<Event> working = new ArrayList<>();
-
     /** The runnable. */
-    private Thread runnable = null;
+    private volatile Thread runnable = null;
+
+    private volatile boolean working = false;
 
     /**
      * Instantiates a new event dispatcher.
@@ -100,43 +100,27 @@ public class EventDispatcher implements Runnable {
      */
     @Override
     public void run() {
-
-        /*
-         * The algorithm is naive:
-         * a) work with not processed (in case);
-         * b) drain the queue
-         * c) work on newly collected
-         * d) empty working queue
-         */
-        while (true) {
-            // finish any pending ones
-            for (Event e : working) {
-                callListeners(e.event, e.path);
-                if (Thread.interrupted()) {
+        try {
+            while (working) {
+                Event event = null;
+                try {
+                    event = eventQueue.poll(50, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    if (working) {
+                        LOGGER.error("Event dispatcher interrupted unexpectedly", e);
+                    }
                     return;
                 }
-                Thread.yield();
-            }
-            // drain the event queue
-            eventQueue.drainTo(working);
-
-            // work on new events.
-            for (Event e : working) {
-                callListeners(e.event, e.path);
-                if (Thread.interrupted()) {
-                    return;
+                if (event != null) {
+                    callListeners(event.event, event.path);
                 }
-                Thread.yield();
             }
-
-            // crear the working queue.
-            working.clear();
-
-            try {
-                Thread.sleep(50);
-            } catch (InterruptedException e1) {
-                // TODO Auto-generated catch block
-                return;
+        } finally {
+            eventQueue.clear();
+            synchronized (this) {
+                if (runnable == Thread.currentThread()) {
+                    runnable = null;
+                }
             }
         }
     }
@@ -150,7 +134,9 @@ public class EventDispatcher implements Runnable {
      *            the path
      */
     public void add(WatchEvent<Path> event, Path path) {
-        eventQueue.offer(new Event(event, path));
+        if (working) {
+            eventQueue.offer(new Event(event, path));
+        }
     }
 
     /**
@@ -164,30 +150,38 @@ public class EventDispatcher implements Runnable {
      */
     // notify listeners about new event
     private void callListeners(final WatchEvent<?> event, final Path path) {
-        boolean matchedOne = false;
-        for (Map.Entry<Path, List<WatchEventListener>> list : listeners.entrySet()) {
-            if (path.startsWith(list.getKey())) {
-                matchedOne = true;
-                for (WatchEventListener listener : new ArrayList<>(list.getValue())) {
-                    WatchFileEvent agentEvent = new HotswapWatchFileEvent(event, path);
-                    try {
-                        listener.onEvent(agentEvent);
-                    } catch (Throwable e) {
-                        // LOGGER.error("Error in watch event '{}' listener
-                        // '{}'", e, agentEvent, listener);
-                    }
+        List<WatchEventListener> matchingListeners = new ArrayList<>();
+        synchronized (listeners) {
+            for (Map.Entry<Path, List<WatchEventListener>> entry : listeners.entrySet()) {
+                if (path.startsWith(entry.getKey())) {
+                    matchingListeners.addAll(entry.getValue());
                 }
             }
         }
-        if (!matchedOne) {
+
+        if (matchingListeners.isEmpty()) {
             LOGGER.error("No match for  watch event '{}',  path '{}'", event, path);
+            return;
+        }
+
+        for (WatchEventListener listener : matchingListeners) {
+            WatchFileEvent agentEvent = new HotswapWatchFileEvent(event, path);
+            try {
+                listener.onEvent(agentEvent);
+            } catch (Throwable e) {
+                LOGGER.error("Error in watch event '{}' listener '{}'", e, agentEvent, listener);
+            }
         }
     }
 
     /**
      * Start.
      */
-    public void start() {
+    public synchronized void start() {
+        if (working || runnable != null) {
+            return;
+        }
+        working = true;
         runnable = new Thread(this);
         runnable.setDaemon(true);
         runnable.setName("HotSwap Dispatcher");
@@ -201,10 +195,25 @@ public class EventDispatcher implements Runnable {
      *             the interrupted exception
      */
     public void stop() throws InterruptedException {
-        if (runnable != null) {
-            runnable.interrupt();
-            runnable.join();
+        Thread thread;
+        synchronized (this) {
+            working = false;
+            thread = runnable;
+            if (thread != null) {
+                thread.interrupt();
+            } else {
+                eventQueue.clear();
+            }
         }
-        runnable = null;
+
+        if (thread != null && thread != Thread.currentThread()) {
+            thread.join();
+        }
+
+        synchronized (this) {
+            if (runnable == thread) {
+                runnable = null;
+            }
+        }
     }
 }

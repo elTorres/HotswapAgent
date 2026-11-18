@@ -23,6 +23,8 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
+import java.util.Iterator;
+import java.util.Map;
 
 /**
  * <p>
@@ -71,7 +73,14 @@ public class TreeWatcherNIO extends AbstractNIO2Watcher {
      */
     private void register(Path dir) throws IOException {
 
-        for(Path p: keys.values()) {
+        for (Iterator<Map.Entry<WatchKey, Path>> iterator = keys.entrySet().iterator(); iterator.hasNext();) {
+            Map.Entry<WatchKey, Path> entry = iterator.next();
+            if (!entry.getKey().isValid()) {
+                iterator.remove();
+                continue;
+            }
+
+            Path p = entry.getValue();
             // This may NOT be correct for all cases (ensure resolve will work!)
             if(dir.startsWith(p)) {
                 LOGGER.debug("Path {} watched via {}", dir, p);

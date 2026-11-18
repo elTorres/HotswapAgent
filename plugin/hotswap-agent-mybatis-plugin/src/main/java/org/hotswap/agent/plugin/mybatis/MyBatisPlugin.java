@@ -19,6 +19,8 @@
 package org.hotswap.agent.plugin.mybatis;
 
 import java.net.URL;
+import java.net.URISyntaxException;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -71,8 +73,17 @@ public class MyBatisPlugin {
 
     @OnResourceFileEvent(path="/", filter = ".*.xml", events = {FileEvent.MODIFY})
     public void registerResourceListeners(URL url) {
-        if (configurationMap.containsKey(url.getPath())) {
+        if (isRegisteredConfiguration(url)) {
             refresh(500);
+        }
+    }
+
+    private boolean isRegisteredConfiguration(URL url) {
+        try {
+            return configurationMap.containsKey(Paths.get(url.toURI()).normalize().toString());
+        } catch (URISyntaxException e) {
+            LOGGER.warning("Unable to normalize MyBatis configuration URL {}", url);
+            return false;
         }
     }
 

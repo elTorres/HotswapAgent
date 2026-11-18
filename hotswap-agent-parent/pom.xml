@@ -5,7 +5,7 @@
     <groupId>org.hotswapagent</groupId>
     <artifactId>hotswap-agent-parent</artifactId>
     <packaging>pom</packaging>
-    <version>1.4.1</version>
+    <version>1.4.2</version>
 
     <name>HotswapAgent</name>
     <description>Java unlimited runtime class and resource redefinition.</description>
@@ -272,7 +272,7 @@
 
     <properties>
         <dcevm>dcevm</dcevm>
-        <dcevm.test.arguments>-XX:+DisableHotswapAgent</dcevm.test.arguments>
+        <dcevm.test.arguments>-XX:HotswapAgent=disabled --add-exports=java.base/jdk.internal.loader=ALL-UNNAMED --add-opens=java.desktop/com.sun.beans.introspect=ALL-UNNAMED</dcevm.test.arguments>
         <project.build.outputEncoding>UTF-8</project.build.outputEncoding>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
