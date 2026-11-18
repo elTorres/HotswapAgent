@@ -258,6 +258,14 @@ In case your DCEVM is named differently i.e. `server`
     mvn release:prepare -Darguments="-Ddcevm=server"
     mvn release:perform -Darguments="-Ddcevm=server"
 
+For the `support/1.4.x` branch, [GitHub Actions](.github/workflows/release-1.4.yml) builds and tests
+each push with DCEVM 11 and keeps `hotswap-agent.jar` as a workflow artifact. To publish a stable
+release, update the Maven version across the reactor and push that commit to `support/1.4.x`.
+Then create and push a new tag such as `RELEASE-1.4.3` on that commit. The tagged commit must
+contain the workflow and belong to the history of `origin/support/1.4.x`. The workflow publishes
+the JAR only if its manifest version matches the tag. A version bump without a tag does not publish
+a GitHub Release.
+
 Credits
 =======
 Hotswap agent:

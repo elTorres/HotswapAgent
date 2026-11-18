@@ -1,0 +1,118 @@
+name: Java CI with Maven
+
+on:
+  push:
+    branches:
+      - support/1.4.x
+    tags:
+      - 'RELEASE-1.4.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validar el tag de release
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^RELEASE-1\.4\.[0-9]+$ ]]; then
+            echo "::error::Se esperaba un tag RELEASE-1.4.N; recibido: $GITHUB_REF_NAME"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/support/1.4.x; then
+            echo "::error::El commit del tag no pertenece al historial de origin/support/1.4.x"
+            exit 1
+          fi
+
+      - name: Restore DCEVM 11
+        id: cache-dcevm
+        uses: actions/cache/restore@v4
+        with:
+          path: dcevm-11.0.15+1
+          key: dcevm-11.0.15+1-linux-x64
+
+      - name: Set up DCEVM 11
+        if: steps.cache-dcevm.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the authenticated API download is more reliable from the runners than the release download URL
+          downloaded=
+          for i in 1 2 3 4 5; do
+            gh release download dcevm-11.0.15+1 --repo TravaOpenJDK/trava-jdk-11-dcevm \
+              --pattern Openjdk11u-dcevm-linux-x64.tar.gz --output jdk.tar.gz --clobber && { downloaded=1; break; }
+            sleep 10
+          done
+          [ -n "$downloaded" ] || curl -fL --retry 5 --retry-all-errors --retry-delay 10 -o jdk.tar.gz https://github.com/TravaOpenJDK/trava-jdk-11-dcevm/releases/download/dcevm-11.0.15%2B1/Openjdk11u-dcevm-linux-x64.tar.gz
+          tar -xzf jdk.tar.gz
+          export JAVA_HOME=$PWD/dcevm-11.0.15+1
+          export PATH=$JAVA_HOME/bin:$PATH
+          java -version
+        shell: bash
+
+      # saved right away, so that the JDK is cached also when the build fails
+      - name: Save DCEVM 11
+        if: steps.cache-dcevm.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dcevm-11.0.15+1
+          key: dcevm-11.0.15+1-linux-x64
+
+      - name: Maven install
+        run: |
+          export JAVA_HOME=$PWD/dcevm-11.0.15+1
+          export PATH=$JAVA_HOME/bin:$PATH
+          java -version
+          mvn -B clean install
+        shell: bash
+
+      - name: Comparar la version del JAR con el tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          expected="${GITHUB_REF_NAME#RELEASE-}"
+          version="$(unzip -p hotswap-agent/target/hotswap-agent.jar META-INF/MANIFEST.MF |
+            awk '{ sub(/\r$/, "") } !NF { section = 1 } !section && sub(/^Implementation-Version: /, "") { print }')"
+          if [[ "$version" != "$expected" ]]; then
+            echo "::error::Implementation-Version del JAR: ${version:-ausente}; el tag exige $expected"
+            exit 1
+          fi
+
+      - name: Guardar el JAR del agente
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotswap-agent
+          path: hotswap-agent/target/hotswap-agent.jar
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hotswap-agent
+          path: dist
+
+      - name: Crear la release con el JAR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/hotswap-agent.jar" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --generate-notes
